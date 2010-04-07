@@ -69,6 +69,17 @@ class MisterCLI(cmdline.CLI):
                 else:
                     self.targets.append(t)
         self.timeout = 90.0
+        self.banned_commands = ('reload', 'reboot', 'shutdown',
+                                'config')
+
+    def _command_is_bad(self, line):
+        if line in self.banned_commands:
+            return True
+        else:
+            for command in self.banned_commands:
+                if line.startswith(command):
+                    return True
+        return False
 
     def default(self, line):
         self.stdout.write('Error: Unknown command: %s. Try "help".\n' % line)
@@ -81,7 +92,10 @@ class MisterCLI(cmdline.CLI):
           > cmd show int desc | i up.*up
         """
         line = ' '.join(line.split()[1:])
-        self._execute_command(line)
+        if self._command_is_bad(line):
+            self.stdout.write('*** The command %r is disallowed.\n\n' % line)
+        else:
+            self._execute_command(line)
 
     def do_counters(self, _):
         """Displays the Notch request counters.
@@ -141,8 +155,7 @@ class MisterCLI(cmdline.CLI):
     def do_notallowed(self, line):
         """This command is disallowed."""
         # To be used to specifically disable commands from being used.
-        self.stdout.write('*** The command %r is disallowed.' % line)
-        self.stdout.write('\n\n')
+        self.stdout.write('*** The command %r is disallowed.\n\n' % line)
 
     def emptyline(self):
         pass

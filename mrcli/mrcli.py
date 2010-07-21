@@ -117,7 +117,8 @@ class MisterCLI(cmdline.CLI):
             # Additional checks.
             if mode == 'csv' and netmunge is None:
                 self.stdout.write(
-                    '*** csv output mode unavailable (need netmunge module)')
+                    '*** csv output mode unavailable '
+                    '(netmunge module required)\n\n')
                 return False
             else:
                 return True

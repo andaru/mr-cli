@@ -26,11 +26,18 @@ tool for planned events as well as diagnosis during break fix.
 """
 
 
+import logging
 import optparse
 import os
 import re
 import sys
+import threading
 
+try:
+    import netmunge
+except:
+    netmunge = None
+    
 import notch.client
 
 import cmdline
@@ -52,6 +59,7 @@ class MisterCLI(cmdline.CLI):
                 cmdline.EOF_SENTINEL: 'do_exit',
                 r'counters': 'do_counters',
                 self.CMD: 'do_command',
+                r'output': 'do_output',
                 r'targets': 'do_targets',
                 r'timeout': 'do_timeout',
                 r'matches': 'do_matches',
@@ -61,6 +69,7 @@ class MisterCLI(cmdline.CLI):
         
         self.notch = notch
         self.targets = []
+
         if targets:
             for t in targets:
                 if t.startswith('^'):
@@ -69,8 +78,14 @@ class MisterCLI(cmdline.CLI):
                 else:
                     self.targets.append(t)
         self.timeout = 90.0
-        self.banned_commands = ('reload', 'reboot', 'shutdown',
-                                'config')
+        self.banned_commands = ('rel', 'reb', 'conf') # reload / reboot / config
+
+        self._devices = {}
+        # The output mode (plugin) used.
+        self.output_mode = None
+        # Output buffers used by buffering output routines.
+        self.output_buffers = {}
+        self.output_done = threading.Event()
 
     def _command_is_bad(self, line):
         if line in self.banned_commands:
@@ -95,7 +110,43 @@ class MisterCLI(cmdline.CLI):
         if self._command_is_bad(line):
             self.stdout.write('*** The command %r is disallowed.\n\n' % line)
         else:
-            self._execute_command(line)
+            self._execute_command(line, output_method=self.output_mode)
+
+    def _output_mode_is_ok(self, mode):
+        if hasattr(self, '_output_' + mode):
+            # Additional checks.
+            if mode == 'csv' and netmunge is None:
+                self.stdout.write(
+                    '*** csv output mode unavailable (need netmunge module)')
+                return False
+            else:
+                return True
+        self.stdout.write('*** Unknown output mode.\n\n')
+        return False
+
+    def do_output(self, line):
+        """Sets the current output method.
+
+          One word (no spaces) allowed in name.
+
+          > output csv
+
+          > output text    [note: default]
+          
+          > output ...
+
+        """
+        if len(line.split()) == 1:
+            self.stdout.write('*** Output command requires a mode. '
+                              '"text" is the default.\n\n')
+        elif len(line.split()) > 2:
+            self.stdout.write('*** Output modes are a single word only.\n\n')
+        else:
+            # Only grab the first argument to be sure.
+            mode = line.split()[1]
+            if self._output_mode_is_ok(mode):
+                self.output_mode = mode
+                self.stdout.write('Changed to output mode: %s\n' % mode)
 
     def do_counters(self, _):
         """Displays the Notch request counters.
@@ -279,23 +330,34 @@ class MisterCLI(cmdline.CLI):
             return None
 
     def _execute_command(self, command, output_method=None, targets=None):
+        """Executes a command (results via an asynchonous callback)."""
+        if output_method == 'csv':
+            self._get_device_info(silent=True)
         targets = targets or self.targets
+        reqs = []
         for target in targets:
             method_args = {'device_name': target,
                            'command': command}
-            kwargs = {'output_mehod': output_method}
+            kwargs = {'output_method': output_method}
             timeout = self.timeout
-            r = notch.client.Request(
-                'command',
-                arguments=method_args, callback=self._notch_callback,
-                callback_kwargs=kwargs,
-                timeout_s=timeout)
-            self.notch.exec_request(r)
-        try:
+            r = notch.client.Request('command',
+                                     arguments=method_args,
+                                     callback=self._notch_callback,
+                                     callback_kwargs=kwargs,
+                                     timeout_s=timeout)
+            reqs.append(r)
+        logging.debug('Executing %d requests.', len(reqs))
+        gts = self.notch.exec_requests(reqs)
+        if gts:
+            try:
+                for gt in gts:
+                    logging.debug('Waiting for %r', gt)
+                    gt.wait()
+            except notch.client.TimeoutError, e:
+                self.stdout.write('%s: request timed out (%.1f s).\n' %
+                                  (target, timeout))
+        else:
             self.notch.wait_all()
-        except notch.client.TimeoutError, e:
-            self.stdout.write('%s: request timed out (%.1f s).\n' %
-                              (target, timeout))
 
     def _print_error(self, request):
         device_name = request.arguments.get('device_name', 'from agent')
@@ -308,11 +370,67 @@ class MisterCLI(cmdline.CLI):
 
     def _notch_callback(self, request, *args, **kwargs):
         output_method = kwargs.get('output_method', None)
-        if output_method is not None and hasattr(self, output_method):
-            method = getattr(self, output_method)
+        request.finish()
+        if output_method is not None and hasattr(
+            self, '_output_' + output_method):
+            method = getattr(self, '_output_' + output_method)
         else:
             method = self._output_text
         method(request)
+
+    def _get_device_info(self, silent=False, reload=False):
+        if (not self._devices) or reload:
+            self._devices = self.notch.devices_info(r'^.*$')
+            if not silent:
+                self.stdout.write('Agent polled for %d devices\n'
+                                  % len(self._devices))
+
+    def _output_csv(self, request):
+        device_name = request.arguments.get('device_name')
+        command = request.arguments.get('command')
+
+        device = self._devices.get(device_name)
+        if device:
+            device_type = device.get('device_type')
+        else:
+            device_type = 'UNKNOWN_DEVICE'
+       
+        if command is None:
+            logging.warn('Not a command request. Not sure how to proceed.')
+            return
+
+        if request.result is not None and netmunge is not None:
+            try:
+                results = netmunge.parse(
+                    device_type, command, request.result)
+                if results:
+                    for r in sorted(results):
+                        fields = ','.join(r)
+                        self.stdout.write('%s,%s\n' % (device_name,fields))
+                else:
+                    # Output parsing probably failed, so just report what we got.
+                    results = request.result
+                    self.stdout.write('%s:\n%s\n' % (device_name, results))
+
+            except ValueError:
+                # No parser available for this command; use regular output.
+                results = request.result
+                self.stdout.write('%s:\n%s\n' % (device_name, results))
+        else:
+            self._print_error(request)
+
+    def _output_buffered_text(self, request):
+        device_name = request.arguments.get('device_name')
+        if request.result is not None:
+            if device_name not in self.output_buffers:
+                self.output_buffers[device_name] = [request.result]
+            else:
+                self.output_buffers[device_name].append(request.result)
+        elif request.error is not None:
+            self._print_error(request)
+        else:
+            self.stdout.write('%s: Incomplete response from Notch Agent.\n' %
+                              (device_name))
 
     def _output_text(self, request):
         device_name = request.arguments.get('device_name')

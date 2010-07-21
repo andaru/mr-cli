@@ -37,3 +37,13 @@ It can be used in both command-line mode::
   br1.mel:
   IOS (tm) 7200 Software (C7200-K4P-M), Version 12.0(33)S6, RELEASE SOFTWARE (fc1)
 
+Changelog
+---------
+
+Version 0.2: 2010-07-21
+^^^^^^^^^^^^^^^^^^^^^^^
+
+  * ``mrcli/mrcli.py``: Add documentation note.  [0ec1a5dded46] [tip]
+  * ``mrcli/mrcli.py``: Correct misterminated error message.  [a69a6da59a7f]
+  * ``mrcli/mrcli.py``: Can use netmunge router output munging library if available. To use, switch output mode to 'csv'.
+

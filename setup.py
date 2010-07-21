@@ -18,7 +18,7 @@ import setuptools
 
 setuptools.setup(
     name='mrcli',
-    version='0.1',
+    version='0.2',
     description='Mister CLI: A multi-router network command-line interface.',
     entry_points = {
         'console_scripts': [

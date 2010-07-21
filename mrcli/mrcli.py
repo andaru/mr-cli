@@ -130,7 +130,7 @@ class MisterCLI(cmdline.CLI):
 
           One word (no spaces) allowed in name.
 
-          > output csv
+          > output csv     [note: requires python netmunge module]
 
           > output text    [note: default]
           

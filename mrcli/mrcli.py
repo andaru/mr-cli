@@ -66,7 +66,8 @@ class MisterCLI(cmdline.CLI):
                 }
         super(MisterCLI, self).__init__(menu, completekey=completekey,
                                         stdin=stdin, stdout=stdout)
-        
+        # If False, we won't auto-fallback.
+        self.from_cmd_loop = True
         self.notch = notch
         self.targets = []
 
@@ -147,7 +148,8 @@ class MisterCLI(cmdline.CLI):
             mode = line.split()[1]
             if self._output_mode_is_ok(mode):
                 self.output_mode = mode
-                self.stdout.write('Changed to output mode: %s\n' % mode)
+                if self.from_cmd_loop:
+                    self.stdout.write('Changed to output mode: %s\n' % mode)
 
     def do_counters(self, _):
         """Displays the Notch request counters.
@@ -409,14 +411,20 @@ class MisterCLI(cmdline.CLI):
                         fields = ','.join(r)
                         self.stdout.write('%s,%s\n' % (device_name,fields))
                 else:
-                    # Output parsing probably failed, so just report what we got.
-                    results = request.result
-                    self.stdout.write('%s:\n%s\n' % (device_name, results))
+                    # Only report raw results if we're falling back.
+                    if self.from_cmd_loop:
+                        results = request.result
+                        self.stdout.write('%s:\n%s\n' % (device_name, results))
 
             except ValueError:
-                # No parser available for this command; use regular output.
-                results = request.result
-                self.stdout.write('%s:\n%s\n' % (device_name, results))
+                # If we ran this from the loop (i.e., interactive Mr. CLI),
+                # we'll automatically fall-back to raw text mode. If not,
+                # don't display anything (as the data is likely going to be
+                # parsed and we cannot make guarantees about complete datasets).
+                if self.from_cmd_loop:
+                    # No parser available for this command; use regular output.
+                    results = request.result
+                    self.stdout.write('%s:\n%s\n' % (device_name, results))
         else:
             self._print_error(request)
 
@@ -468,7 +476,7 @@ def get_option_parser():
             % prog,
             '',
             '    $ export NOTCH_AGENTS="localhost:8080"',
-            '    $ %s -t cr1.mel -c "show arp"' % prog,
+            '    $ %s -t cr1.mel -o csv -c "show arp"' % prog,
             ])
 
     parser.add_option('-t', '--target', dest='targets', action='append',
@@ -476,20 +484,23 @@ def get_option_parser():
                       help='Adds a single target device')
     parser.add_option('-c', '--cmd', dest='cmd', default=None,
                       help='The command to execute on each target')
+    modes = ['text']
+    if netmunge:
+        modes.append('csv')
+    parser.add_option('-o', '--output', dest='mode', default=None,
+                      help='Use output mode (%s)'
+                      % ', '.join(modes))
     return parser
 
 
 WELCOME_MSG = 'Welcome to Mr. CLI.  Type \'help\' if you need it.'
 
-def main():
-    option_parser = get_option_parser()
-    options, args = option_parser.parse_args()
 
+def _get_agents(args):
     # Attempt to gather agent addresses from the environment.
     agents = os.getenv('NOTCH_AGENTS')
     if not args and not agents:
-        print option_parser.format_help()
-        raise SystemExit(1)
+        return None
 
     # Figure out the agent addresses from the commandline.
     if not agents:
@@ -497,12 +508,27 @@ def main():
         for i, a in enumerate(agents):
             agents[i] = a.lstrip()
 
+    return agents
+
+
+def main():
+    option_parser = get_option_parser()
+    options, args = option_parser.parse_args()
+
+    agents = _get_agents(args)
+    if agents is None:
+        print option_parser.format_help()
+        raise SystemExit(1)
+
     # Start the Notch client and CLI
     try:
         nc = notch.client.Connection(agents)
         cli = MisterCLI(nc, targets=options.targets)
 
         if options.cmd:
+            cli.from_cmd_loop = False
+            if options.mode != 'text':
+                cli.do_output('output %s' % options.mode)
             cli.do_command('cmd %s' % options.cmd)
         else:
             print WELCOME_MSG

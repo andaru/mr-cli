@@ -25,7 +25,7 @@ setuptools.setup(
             'mrcli = mrcli.mrcli:main'
             ]
         },
-    install_requires=['notch >= 0.2',
+    install_requires=['notch.client',
                       'pytrie'],
     url='http://code.google.com/p/mr-cli/',
     author='Andrew Fort',

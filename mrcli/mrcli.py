@@ -29,15 +29,14 @@ tool for planned events as well as diagnosis during break fix.
 import logging
 import optparse
 import os
-import re
 import sys
 import threading
 
 try:
     import netmunge
-except:
+except ImportError:
     netmunge = None
-    
+
 import notch.client
 
 import cmdline
@@ -52,7 +51,7 @@ class MisterCLI(cmdline.CLI):
     PROMPT = '%s [t: 0] > ' % PREFIX
 
     def __init__(self, notch, completekey='tab', stdin=None, stdout=None,
-                 menu=None, targets=None):
+                 targets=None):
         menu = {r'exit': 'do_exit',
                 r'quit': 'do_exit',
                 r'help': 'do_help',
@@ -97,7 +96,7 @@ class MisterCLI(cmdline.CLI):
                     return True
         return False
 
-    def default(self, line):
+    def default(self, line, action=None):
         self.stdout.write('Error: Unknown command: %s. Try "help".\n' % line)
 
     def do_command(self, line):
@@ -134,7 +133,7 @@ class MisterCLI(cmdline.CLI):
           > output csv     [note: requires python netmunge module]
 
           > output text    [note: default]
-          
+
           > output ...
 
         """
@@ -158,7 +157,7 @@ class MisterCLI(cmdline.CLI):
 
         > counters
         Notch Transport Counters
-        [Requests]  total: 97        ok: 97        error: 0        
+        [Requests]  total: 97        ok: 97        error: 0
         [Responses] total: 97        ok: 85        error: 12        data: 1.2 MB
 
         ------------------------------------------------------------------------
@@ -195,16 +194,12 @@ class MisterCLI(cmdline.CLI):
         if not arg or len(arg) == 1:
             return
         else:
-            try:
-                targets = self._get_targets(line, only_regexp=True)
-            except NoDevicesMatching, e:
-                self.stdout.write('Targets could not be retrieved.')
+            targets = self._get_targets(line, only_regexp=True)
+            if targets:
+                self.stdout.write('Matching device names (%d): %s\n'
+                                  % (len(targets), str(', '.join(targets))))
             else:
-                if targets:
-                    self.stdout.write('Matching device names (%d): %s\n'
-                                      % (len(targets), str(', '.join(targets))))
-                else:
-                    self.stdout.write('No targets matched your query.\n')
+                self.stdout.write('No targets matched your query.\n')
 
     def do_notallowed(self, line):
         """This command is disallowed."""
@@ -255,7 +250,7 @@ class MisterCLI(cmdline.CLI):
         """Displays or sets the timeout, in seconds.
 
         Issuing the 'timeout' command will display the current timeout.
-        
+
         To set the timeout, supply an integer or floating point value
         argument.
 
@@ -268,7 +263,7 @@ class MisterCLI(cmdline.CLI):
           > timeout 0.5
           Error: 1 second is the minimum timeout.
           Timeout is 5.0 seconds.
-        
+
           > timeout
           Timeout is 5.0 seconds.
         """
@@ -301,14 +296,13 @@ class MisterCLI(cmdline.CLI):
                 if not only_regexp:
                     result.append(t)
         return result
-                
+
     def _parse_targets(self, line):
         """Parses the targets argument."""
         args = line.split()
         if len(args) < 2:
             return []
         else:
-            targets = []
             target_spec = args[1:]
             target_spec = [t.split(',') for t in target_spec]
             specs = []
@@ -342,12 +336,11 @@ class MisterCLI(cmdline.CLI):
             method_args = {'device_name': target,
                            'command': command}
             kwargs = {'output_method': output_method}
-            timeout = self.timeout
             r = notch.client.Request('command',
                                      arguments=method_args,
                                      callback=self._notch_callback,
                                      callback_kwargs=kwargs,
-                                     timeout_s=timeout)
+                                     timeout_s=self.timeout)
             reqs.append(r)
         logging.debug('Executing %d requests.', len(reqs))
         gts = self.notch.exec_requests(reqs)
@@ -356,9 +349,9 @@ class MisterCLI(cmdline.CLI):
                 for gt in gts:
                     logging.debug('Waiting for %r', gt)
                     gt.wait()
-            except notch.client.TimeoutError, e:
-                self.stdout.write('%s: request timed out (%.1f s).\n' %
-                                  (target, timeout))
+            except notch.client.TimeoutError:
+                self.stdout.write('Request timed out (%.1f s).\n' %
+                                  self.timeout)
         else:
             self.notch.wait_all()
 
@@ -372,7 +365,8 @@ class MisterCLI(cmdline.CLI):
                                str(request.error)))
 
     def _notch_callback(self, request, *args, **kwargs):
-        output_method = kwargs.get('output_method', None)
+        _ = args
+        output_method = kwargs.get('output_method')
         request.finish()
         if output_method is not None and hasattr(
             self, '_output_' + output_method):
@@ -397,7 +391,7 @@ class MisterCLI(cmdline.CLI):
             device_type = device.get('device_type')
         else:
             device_type = 'UNKNOWN_DEVICE'
-       
+
         if command is None:
             logging.warn('Not a command request. Not sure how to proceed.')
             return
@@ -439,7 +433,7 @@ class MisterCLI(cmdline.CLI):
             self._print_error(request)
         else:
             self.stdout.write('%s: Incomplete response from Notch Agent.\n' %
-                              (device_name))
+                              device_name)
 
     def _output_text(self, request):
         device_name = request.arguments.get('device_name')
@@ -450,7 +444,7 @@ class MisterCLI(cmdline.CLI):
             self._print_error(request)
         else:
             self.stdout.write('%s: Incomplete response from Notch Agent.\n' %
-                              (device_name))
+                              device_name)
 
     def interrupted(self):
         if self.notch.num_requests_running or self.notch.num_requests_waiting:
@@ -471,6 +465,8 @@ def get_option_parser():
             '',
             'Examples:',
             '    $ %s localhost:8080,localhost:8081' % prog,
+            '',
+            '    $ %s  # Use .notchrc or /etc/notchrc for agent hosts' % prog,
             '',
             '    $ NOTCH_AGENTS="localhost:8080,server.example.com:8080" %s'
             % prog,
@@ -516,10 +512,6 @@ def main():
     options, args = option_parser.parse_args()
 
     agents = _get_agents(args)
-    if agents is None:
-        print option_parser.format_help()
-        raise SystemExit(1)
-
     # Start the Notch client and CLI
     try:
         nc = notch.client.Connection(agents)
@@ -535,7 +527,7 @@ def main():
             cli.cmdloop()
             print '\nBye.'
     except notch.client.NoAgentsError, e:
-        print 'No valid agents were found.'
+        print str(e)
         print
         print option_parser.get_usage()
         raise SystemExit(1)
